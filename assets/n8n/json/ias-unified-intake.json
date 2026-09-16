@@ -1,0 +1,263 @@
+{
+  "name": "IAS : Unified Intake — One Router, Ranked Personas",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ias-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-unified-0001",
+      "name": "Unified Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-2048, 640],
+      "webhookId": "2dce858f-53d6-4dcd-88a6-bca6c58b28ed",
+      "notes": "SINGLE front door. /contact, /api/lead, /api/download, and the FORGE tools all POST here. Required: email. Recommended: ias_source (persona/door), ias_last_asset (campaign), stage."
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Normalize & Validate — unified.\n * Cleans payload, validates email, captures BOTH axes:\n *   ias_source  = persona / which door (enum-bound in HubSpot)\n *   ias_last_asset = campaign / what they touched (free text, never lossy)\n * stage tells us the funnel: contact | bootcamp | download | tool.\n */\nconst b = $json.body ?? $json;\nconst EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst email = String(b.email ?? '').trim().toLowerCase();\nif (!EMAIL_RE.test(email)) { return []; } // drop invalid; browser already got 200\n\nconst firstName = String(b.first_name ?? b.firstName ?? b.firstname ?? '').trim();\nconst stage = String(b.stage ?? '').trim().toLowerCase(); // contact|bootcamp|download|tool|''\nconst isDownload = stage === 'download';\n\n// intent: confirmed vs waitlist (bootcamp only). Non-'waitlist' => confirmed.\nconst intent = String(b.intent ?? 'confirmed').trim().toLowerCase() === 'waitlist' ? 'waitlist' : 'confirmed';\n\n// Raw persona hint from the front end (may be blank). Validated later.\nconst iasSourceRaw = String(b.ias_source ?? '').trim();\n\n// Campaign axis: real slug wins, else brand_name (BrandForge), else tool, else source.\nconst lastAsset = String(\n  b.ias_last_asset\n    || (b.brand_name ? ('brand-guide:' + b.brand_name) : '')\n    || b.tool\n    || b.source\n    || stage\n    || 'submission'\n).trim();\n\nconst nowIso = new Date().toISOString();\n\nreturn [{ json: {\n  email,\n  firstName,\n  stage,\n  isDownload,\n  intent,\n  iasSourceRaw,\n  lastAsset,\n  tool: String(b.tool ?? '').trim(),\n  source: String(b.source ?? '').trim(),\n  nowIso,\n  searchBody: {\n    filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: email }] }],\n    properties: ['email','firstname','ias_source','ias_last_asset','drip_status','submission_count','suppressed'],\n    limit: 1\n  }\n}}];"
+      },
+      "id": "code-normalize-0002",
+      "name": "Normalize & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1760, 640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.searchBody) }}",
+        "options": {}
+      },
+      "id": "http-hs-search-0003",
+      "name": "HubSpot — Search by Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1520, 640],
+      "credentials": { "httpHeaderAuth": { "id": "1P0GbmRQqzhn6M2r", "name": "IAS HubSpot [ Private App ]" } }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "/**\n * Resolve Persona + Rules — the shared brain.\n * Promotes tool-capture.json's rank resolver to ALL funnels.\n * LOWER rank number wins. Employment personas sit at the top so a Toyota\n * hiring manager is NEVER downgraded by a later bootcamp/tool signup.\n */\nconst input = $('Normalize & Validate').item.json;\nconst search = $json;\nconst existing = (search.results && search.results[0]) ? search.results[0] : null;\nconst existingId = existing ? existing.id : null;\nconst ep = existing ? (existing.properties || {}) : {};\nconst existingSource = ep.ias_source || null;\nconst existingCount = parseInt(ep.submission_count || '0', 10);\nconst suppressed = ep.suppressed === 'true';\nconst existingDrip = ep.drip_status || '';\n\n// ---- Persona axis: map raw front-end source -> valid HubSpot enum ----\nconst VALID = ['portfolio_hiring_manager','portfolio_recruiter','portfolio_exec','bootcamp_subscriber','tool_agentforge','tool_brandforge'];\nconst SOURCE_MAP = {\n  'contact': 'portfolio_exec',\n  'portfolio': 'portfolio_exec',\n  'hiring_manager': 'portfolio_hiring_manager',\n  'recruiter': 'portfolio_recruiter',\n  'ias-vsl': 'bootcamp_subscriber',\n  'bootcamp': 'bootcamp_subscriber',\n  'ias-downloads': 'bootcamp_subscriber', // TODO: add 'download_lead' enum option, then map here\n  'download': 'bootcamp_subscriber',\n  'agentforge-tool': 'tool_agentforge',\n  'brandforge-tool': 'tool_brandforge'\n};\n// Prefer an explicit valid ias_source from the front end; else map raw source; else stage; else safe default.\nlet incomingSource =\n  (input.iasSourceRaw && VALID.includes(input.iasSourceRaw)) ? input.iasSourceRaw\n  : (SOURCE_MAP[input.iasSourceRaw] || SOURCE_MAP[input.source] || SOURCE_MAP[input.stage] || 'bootcamp_subscriber');\n\n// ---- Ranked retag: higher-value persona is sticky ----\nconst RANK = { portfolio_hiring_manager:1, portfolio_recruiter:1, portfolio_exec:2, tool_agentforge:3, tool_brandforge:3, bootcamp_subscriber:4 };\nfunction resolveRetag(ex, inc){ if(!ex || !(ex in RANK)) return inc; return (RANK[inc] < RANK[ex]) ? inc : ex; }\nconst finalSource = resolveRetag(existingSource, incomingSource);\n\n// ---- Classify for routing ----\nconst isHighValue = finalSource === 'portfolio_hiring_manager' || finalSource === 'portfolio_recruiter';\nconst isDownload = input.isDownload;\nconst isExistingSubscriber = existing && (existingSource === 'bootcamp_subscriber' || existingDrip === 'active' || existingDrip === 'enrolled');\nconst isWaitlist = input.intent === 'waitlist';\nconst nowIso = input.nowIso;\n\n// ---- Build HubSpot props ----\nlet props = {\n  email: input.email,\n  ias_source: finalSource,\n  ias_last_asset: input.lastAsset,\n  last_submitted_at: nowIso,\n  submission_count: String(existingCount + 1)\n};\nif (input.firstName) props.firstname = input.firstName;\n\n// Drip decision is SEPARATE from persona.\nif (isHighValue) {\n  // Employment pillar firing live. Never drip. Flag + alert.\n  props.drip_status = 'suppressed_high_value';\n} else if (isDownload) {\n  // Download: tag only. App mints Upstash link + sends via Resend.\n  if (!existing) { props.lifecyclestage = 'subscriber'; if (!existingDrip) props.drip_status = 'tool_user_unconverted'; }\n} else if (finalSource === 'tool_agentforge' || finalSource === 'tool_brandforge') {\n  // Tool-only lead nurture track (unless already a real subscriber).\n  if (!existing) { props.lifecyclestage = 'subscriber'; props.drip_status = 'tool_user_unconverted'; props.suppressed = 'false'; }\n  else if (!isExistingSubscriber && !existingDrip) { props.drip_status = 'tool_user_unconverted'; }\n} else {\n  // Bootcamp / VSL.\n  if (!existing) {\n    props.lifecyclestage = 'subscriber';\n    props.drip_status = isWaitlist ? 'waitlist' : 'enrolled';\n    props.drip_started_at = nowIso;\n    props.drip_last_step = '0';\n    props.suppressed = 'false';\n  }\n  // If existing subscriber already enrolled: usage props only (idempotent).\n}\n\n// What downstream branches need.\nconst route = isHighValue ? 'high_value' : (isDownload ? 'download' : (isExistingSubscriber ? 'existing' : 'bootcamp'));\n\nreturn [{ json: {\n  existingId, suppressed, finalSource, route,\n  isHighValue, isDownload, isExistingSubscriber,\n  email: input.email, firstName: input.firstName, lastAsset: input.lastAsset,\n  stage: input.stage, nowIso, props\n}}];"
+      },
+      "id": "code-resolve-0004",
+      "name": "Resolve Persona + Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1280, 640]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "combinator": "and",
+          "conditions": [{ "leftValue": "={{ $json.existingId }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } }]
+        },
+        "options": {}
+      },
+      "id": "if-exists-0005",
+      "name": "Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1040, 640]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{ $json.existingId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"properties\": {{ JSON.stringify($json.props) }} }",
+        "options": {}
+      },
+      "id": "http-hs-update-0006",
+      "name": "HubSpot — Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-800, 512],
+      "credentials": { "httpHeaderAuth": { "id": "1P0GbmRQqzhn6M2r", "name": "IAS HubSpot [ Private App ]" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"properties\": {{ JSON.stringify($json.props) }} }",
+        "options": {}
+      },
+      "id": "http-hs-create-0007",
+      "name": "HubSpot — Create",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-800, 768],
+      "credentials": { "httpHeaderAuth": { "id": "1P0GbmRQqzhn6M2r", "name": "IAS HubSpot [ Private App ]" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 1 },
+                "combinator": "and",
+                "conditions": [{ "id": "r-hv", "leftValue": "={{ $('Resolve Persona + Rules').item.json.route }}", "rightValue": "high_value", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true, "outputKey": "High Value"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 1 },
+                "combinator": "and",
+                "conditions": [{ "id": "r-dl", "leftValue": "={{ $('Resolve Persona + Rules').item.json.route }}", "rightValue": "download", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true, "outputKey": "Download"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 1 },
+                "combinator": "and",
+                "conditions": [{ "id": "r-ex", "leftValue": "={{ $('Resolve Persona + Rules').item.json.route }}", "rightValue": "existing", "operator": { "type": "string", "operation": "equals" } }]
+              },
+              "renameOutput": true, "outputKey": "Existing — Touch Only"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "Bootcamp Email" }
+      },
+      "id": "switch-route-0008",
+      "name": "Route by Persona",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-520, 640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "resendApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: 'IAS Alerts <alerts@iasbootcamp.com>', to: ['i.automate.shit@gmail.com'], subject: '🚨 HIGH-VALUE INBOUND: ' + $('Resolve Persona + Rules').item.json.finalSource + ' — ' + $('Resolve Persona + Rules').item.json.email, html: '<h2>Employment pillar firing.</h2><p><b>Persona:</b> ' + $('Resolve Persona + Rules').item.json.finalSource + '</p><p><b>Email:</b> ' + $('Resolve Persona + Rules').item.json.email + '</p><p><b>Name:</b> ' + ($('Resolve Persona + Rules').item.json.firstName || '(none)') + '</p><p><b>Last asset:</b> ' + $('Resolve Persona + Rules').item.json.lastAsset + '</p><p><b>Stage:</b> ' + $('Resolve Persona + Rules').item.json.stage + '</p><p>Contact was flagged suppressed_high_value in HubSpot — NOT dripped. Respond personally.</p>' }) }}",
+        "options": {}
+      },
+      "id": "http-alert-0009",
+      "name": "Alert You — High Value",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, 400],
+      "credentials": { "resendApi": { "id": "GORgpM7tneBaRGZR", "name": "IAS Resend" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "noop-download-0010",
+      "name": "Download — App Sends via Upstash+Resend",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-240, 560],
+      "notes": "Tag only. Vercel /api/download mints the 24h Upstash link and sends via Resend (no attachment = inbox placement)."
+    },
+    {
+      "parameters": {},
+      "id": "noop-existing-0011",
+      "name": "Existing — Skipped",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-240, 700],
+      "notes": "Already enrolled subscriber; usage props already written by Update. No new drip."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "/**\n * Build Bootcamp Email — calendar-driven selector.\n * PORT your existing v2.0.0 node body here unchanged (TEMPLATES + CALENDAR +\n * future/live/past selector). Identity is read from Resolve Persona + Rules:\n *   const s = $('Resolve Persona + Rules').item.json;  // email, firstName\n * Output: { json: { resendBody } } exactly as before.\n */\nconst s = $('Resolve Persona + Rules').item.json;\nconst first = s.firstName || 'there';\nconst email = s.email;\nconst UNSUB_URL = 'https://www.iasbootcamp.com/unsubscribe?e=' + encodeURIComponent(email);\n// --- PLACEHOLDER: paste TEMPLATES{}, CALENDAR{}, and selector from your\n//     existing Build Bootcamp Email node here, then build resendBody. ---\nreturn { json: { resendBody: {\n  from: 'Steve <steve@iasbootcamp.com>',\n  to: [email],\n  subject: \"You're in — next build details inside\",\n  html: '<p>What\\'s up ' + first + ', you\\'re on the list.</p>',\n  headers: { 'List-Unsubscribe': '<' + UNSUB_URL + '>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },\n  tags: [{ name: 'type', value: 'bootcamp-confirmation' }]\n}}};"
+      },
+      "id": "code-bootcamp-email-0012",
+      "name": "Build Bootcamp Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-240, 860]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "resendApi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.resendBody) }}",
+        "options": {}
+      },
+      "id": "http-resend-bootcamp-0013",
+      "name": "Resend — Send Bootcamp Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 860],
+      "credentials": { "resendApi": { "id": "GORgpM7tneBaRGZR", "name": "IAS Resend" } },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"email\": \"{{ $('Resolve Persona + Rules').item.json.email }}\", \"ias_source\": \"{{ $('Resolve Persona + Rules').item.json.finalSource }}\", \"route\": \"{{ $('Resolve Persona + Rules').item.json.route }}\", \"existing\": {{ $('Resolve Persona + Rules').item.json.existingId ? true : false }} }",
+        "options": {}
+      },
+      "id": "respond-0014",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [260, 640]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Unified Intake Webhook": { "main": [[{ "node": "Normalize & Validate", "type": "main", "index": 0 }]] },
+    "Normalize & Validate": { "main": [[{ "node": "HubSpot — Search by Email", "type": "main", "index": 0 }]] },
+    "HubSpot — Search by Email": { "main": [[{ "node": "Resolve Persona + Rules", "type": "main", "index": 0 }]] },
+    "Resolve Persona + Rules": { "main": [[{ "node": "Exists?", "type": "main", "index": 0 }]] },
+    "Exists?": { "main": [[{ "node": "HubSpot — Update", "type": "main", "index": 0 }], [{ "node": "HubSpot — Create", "type": "main", "index": 0 }]] },
+    "HubSpot — Update": { "main": [[{ "node": "Route by Persona", "type": "main", "index": 0 }]] },
+    "HubSpot — Create": { "main": [[{ "node": "Route by Persona", "type": "main", "index": 0 }]] },
+    "Route by Persona": { "main": [
+      [{ "node": "Alert You — High Value", "type": "main", "index": 0 }],
+      [{ "node": "Download — App Sends via Upstash+Resend", "type": "main", "index": 0 }],
+      [{ "node": "Existing — Skipped", "type": "main", "index": 0 }],
+      [{ "node": "Build Bootcamp Email", "type": "main", "index": 0 }]
+    ] },
+    "Alert You — High Value": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Download — App Sends via Upstash+Resend": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Existing — Skipped": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Build Bootcamp Email": { "main": [[{ "node": "Resend — Send Bootcamp Email", "type": "main", "index": 0 }]] },
+    "Resend — Send Bootcamp Email": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "binaryMode": "separate" },
+  "tags": [{ "name": "iasbootcamp.com" }, { "name": "production" }]
+}
