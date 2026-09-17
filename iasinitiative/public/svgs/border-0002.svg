@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg data-bbox="0 0 3000 12" viewBox="0 0 3000 12" xmlns="http://www.w3.org/2000/svg" data-type="color">
-    <g>
-        <path fill="#111827" d="M2650 0v12H0V0z" data-color="1"/>
-        <path fill="#3f7266" d="M2835 0v12h-185V0z" data-color="2"/>
-        <path fill="#00e5a3" d="M3000 0v12h-165V0z" data-color="3"/>
-    </g>
-</svg>

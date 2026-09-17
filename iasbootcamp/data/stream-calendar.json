@@ -1,0 +1,28 @@
+{
+  "streams": [
+    {
+      "id": "2026-03-14-referraldesk",
+      "title": "ReferralDesk — Live Attribution Build",
+      "description": "IAS Bootcamp live build — full production automation architected and deployed live.",
+      "datetime": "2026-03-14T19:00:00-04:00",
+      "datetime_display": "Sat, Mar 14 · 7:00 PM EDT",
+      "duration_minutes": 120,
+      "state": "future",
+      "location": "YouTube Live",
+      "youtube_live_url": "https://youtube.com/@iautomateshit/live",
+      "youtube_vod_url": ""
+    },
+    {
+      "id": "2026-03-28-brandforge",
+      "title": "BrandForge — Color Extraction Deep Dive",
+      "description": "IAS Bootcamp live build — full production automation architected and deployed live.",
+      "datetime": "2026-03-28T19:00:00-04:00",
+      "datetime_display": "Sat, Mar 28 · 7:00 PM EDT",
+      "duration_minutes": 120,
+      "state": "future",
+      "location": "YouTube Live",
+      "youtube_live_url": "https://youtube.com/@iautomateshit/live",
+      "youtube_vod_url": ""
+    }
+  ]
+}
