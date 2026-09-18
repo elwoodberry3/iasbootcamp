@@ -73,7 +73,8 @@ iasbootcamp/
     └── svgs/                                          # Vector logo assets (SVG)
         ├── dark.mode__stacked.svg                     # Stacked IAS wordmark logo — dark-mode variant
         ├── light.mode__stacked.svg                    # Stacked IAS wordmark logo — light-mode variant
-└── styles/                                            # [ TODO: confirm — appears unused; globals.css lives under app/. Verify or remove ]
+└── styles/                                            # [ INSERT 100 CHARACTER PLAIN ENGLISH DESCRIPTION ]
+    ├── globals.css
 ├── next-env.d.ts                                      # Next.js TypeScript ambient types (generated)
 ├── next.config.mjs                                    # Next config; no static export (server API routes proxy to n8n) + /ics/:id.ics rewrite
 ├── package.json                                       # Dependencies + scripts (dev / build / start / lint)

@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --page: #ffffff;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+body {
+  @apply bg-white text-body font-body antialiased;
+}
+
+/* Utility text used for labels/eyebrows — the "build log" voice */
+.eyebrow {
+  @apply font-mono text-xs uppercase tracking-[0.18em] text-secondary;
+}
+
+/* Keyboard focus — visible, on brand */
+:where(a, button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid #00e5a3;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
