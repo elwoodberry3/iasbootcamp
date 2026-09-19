@@ -60,11 +60,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         >
           Skip to content
         </a>
-        <SiteHeader />
+
         <main id="main" className="flex-1">
           {children}
         </main>
-        <SiteFooter />
+
       </body>
     </html>
   );
